@@ -15,35 +15,44 @@ IG_HEADERS = {
 
 def extract_direct_video_url(post_url: str):
     clean_url = post_url.split("?")[0].rstrip("/")
-    
-    # 1. Ping oEmbed endpoint
+    shortcode_match = re.search(r'/(?:reel|p|tv)/([A-Za-z0-9_-]+)', clean_url)
+    if not shortcode_match:
+        return None
+    shortcode = shortcode_match.group(1)
+
+    # Strategy 1: Fast public proxy service (handles residential IP rotation)
     try:
-        requests.get(
-            f"https://www.instagram.com/api/v1/oembed/?url={clean_url}/",
-            headers=IG_HEADERS,
-            timeout=8
-        )
+        api_endpoint = f"https://api.vkrdown.com/insta/?url=https://www.instagram.com/reel/{shortcode}/"
+        res = requests.get(api_endpoint, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            # Most scrapers return direct download URL under 'url' or 'data.url'
+            video = data.get("url") or (data.get("data", [{}])[0].get("url") if isinstance(data.get("data"), list) else None)
+            if video:
+                return video
     except Exception:
         pass
 
-    # 2. Extract OpenGraph and CDN link patterns from post HTML
+    # Strategy 2: Direct Embed/GraphQL fetch with mobile user-agent fallback
     try:
-        page = requests.get(f"{clean_url}/", headers=IG_HEADERS, timeout=10)
+        mobile_headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+        }
+        embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
+        embed_res = requests.get(embed_url, headers=mobile_headers, timeout=10)
         
-        og_match = re.search(r'property="og:video"\s+content="([^"]+)"', page.text)
-        if og_match:
-            return og_match.group(1).replace("&amp;", "&")
-
-        alt_match = re.search(r'content="([^"]+)"\s+property="og:video"', page.text)
-        if alt_match:
-            return alt_match.group(1).replace("&amp;", "&")
-
-        cdn_match = re.search(r'(https://[^"\\]+cdninstagram\.com/[^"\\]+\.mp4[^"\\]*)', page.text)
+        # Instagram embeds still contain video source links in captioned mode
+        video_match = re.search(r'class="EmbeddedVideo"\s+src="([^"]+)"', embed_res.text)
+        if video_match:
+            return video_match.group(1).replace("&amp;", "&")
+            
+        cdn_match = re.search(r'https://[^"\\\\]+cdninstagram\.com/[^"\\\\]+\.mp4[^"\\\\]*', embed_res.text)
         if cdn_match:
-            clean_cdn = cdn_match.group(1).encode().decode('unicode-escape')
-            return clean_cdn.replace("&amp;", "&")
+            return cdn_match.group(0).encode().decode('unicode-escape').replace("&amp;", "&")
     except Exception as e:
-        print(f"Extraction error: {e}")
+        print(f"Fallback extraction failed: {e}")
 
     return None
 
